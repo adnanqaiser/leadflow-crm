@@ -1,0 +1,121 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: leads
+// Document ID: auto-generated
+// Fields:
+//   - id: string (required) - Unique identifier
+//   - name: string (required) - Lead name
+//   - email: string (required, format: email) - Lead email
+//   - phone: string (optional) - Lead phone
+//   - company: string (optional) - Lead company
+//   - status: string (required, enum: ['New', 'Contacted', 'Closed']) - Lead status
+//   - source: string (optional) - Lead source
+//   - value: number (optional) - Lead value
+//   - createdAt: string (required, format: date-time) - Creation timestamp
+//   - userId: string (required) - Owner UID
+//
+// Collection: users
+// Document ID: auth.uid
+// Fields:
+//   - uid: string (required) - Auth UID
+//   - email: string (required, format: email) - User email
+//   - displayName: string (optional) - User name
+//   - role: string (required, enum: ['admin', 'user']) - User role
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(data, allowedFields) {
+      return data.keys().hasOnly(allowedFields);
+    }
+
+    function hasRequiredFields(data, requiredFields) {
+      return data.keys().hasAll(requiredFields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidLead(data) {
+      let allowedFields = ['id', 'name', 'email', 'phone', 'company', 'status', 'source', 'value', 'createdAt', 'userId'];
+      let requiredFields = ['name', 'email', 'status', 'userId', 'createdAt'];
+      
+      return hasOnlyAllowedFields(data, allowedFields) &&
+             hasRequiredFields(data, requiredFields) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.status in ['New', 'Contacted', 'Closed'] &&
+             data.userId == request.auth.uid &&
+             isValidDateString(data.createdAt) &&
+             (data.value == null || data.value is number);
+    }
+
+    function isValidUser(data) {
+      let allowedFields = ['uid', 'email', 'displayName', 'role'];
+      let requiredFields = ['uid', 'email', 'role'];
+      
+      return hasOnlyAllowedFields(data, allowedFields) &&
+             hasRequiredFields(data, requiredFields) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /leads/{leadId} {
+      // Users can only read their own leads
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
+      
+      allow create: if isAuthenticated() && isValidLead(request.resource.data);
+      
+      allow update: if isAuthenticated() && isDocOwner() && isValidLead(request.resource.data) &&
+                    request.resource.data.userId == resource.data.userId &&
+                    request.resource.data.createdAt == resource.data.createdAt;
+      
+      allow delete: if isAuthenticated() && isDocOwner();
+    }
+
+    match /users/{userId} {
+      // Users can only read/write their own profile
+      allow read: if isOwner(userId);
+      
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
+      
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    request.resource.data.role == resource.data.role;
+    }
+  }
+}
